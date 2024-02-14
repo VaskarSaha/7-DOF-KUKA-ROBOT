@@ -1,0 +1,254 @@
+import numpy as np
+import math
+
+#given parameteSrs:
+
+alpha = [-np.pi/2, np.pi/2, np.pi/2, -np.pi/2, -np.pi/2, np.pi/2, 0]
+d_bs = 0.340  # in mm
+d_se = 0.400  
+d_ew = 0.400  
+d_wf = 0.126
+
+class InvKinematics:
+    
+    
+    
+    def get_inv_kinematics(self,pos_X, pos_Y, pos_Z, roll, pitch, yaw):
+            
+        psi = np.concatenate((np.arange(-90, 0, 90), np.arange(0, 91, 90)))   
+       
+        
+        # Rotation matrix R0_7
+        r11 = math.cos(roll) * math.cos(pitch)
+        r12 = (math.cos(roll) * math.sin(pitch) * math.sin(yaw)) - (math.sin(roll) * math.cos(yaw))
+        r13 = (math.cos(roll) * math.sin(pitch) * math.cos(yaw)) + (math.sin(roll) * math.sin(yaw))
+        r21 = math.sin(roll) * math.cos(pitch)
+        r22 = (math.sin(roll) * math.sin(pitch) * math.sin(yaw)) + (math.cos(roll) * math.cos(pitch))
+        r23 = (math.sin(roll) * math.sin(pitch) * math.cos(yaw)) - (math.cos(roll) * math.sin(yaw))
+        r31 = -math.sin(pitch)
+        r32 = math.cos(pitch) * math.sin(yaw)
+        r33 = math.cos(pitch) * math.cos(yaw)
+
+        R0_7 = np.array([[r11, r12, r13],
+                        [r21, r22, r23],
+                        [r31, r32, r33]])
+
+      
+
+        # Calculate shoulder to elbow (2p4), elbow to wrist (4p6), and wrist to flange (6p7) vectors
+        p0_2 = np.array([0, 0, d_bs])
+        p2_4 = np.array([0, d_se, 0])
+        p4_6 = np.array([0, 0, d_ew])
+        p6_7 = np.array([0, 0, d_wf])
+        p0_7= np.array([pos_X, pos_Y, pos_Z])
+        
+       
+        # Calculate the shoulder-wrist vector (2p6)
+        p2_6 = p0_7 - p0_2 - np.dot(R0_7, p6_7)       
+        print("Shoulder-Wrist vector:",p2_6)
+        
+        conventions = [
+                {"GC2": 1, "GC4": 1, "GC6": 1},
+                {"GC2": -1, "GC4": 1, "GC6": 1},
+                {"GC2": 1, "GC4": 1, "GC6": -1},
+                {"GC2": -1, "GC4": 1, "GC6": -1},
+                {"GC2": 1, "GC4": -1, "GC6": 1},
+                {"GC2": -1, "GC4": -1, "GC6": 1},
+                {"GC2": 1, "GC4": -1, "GC6": -1},
+                {"GC2": -1, "GC4": -1, "GC6": -1},
+]        
+        
+        for gc in conventions: 
+       
+            # Virtual Joint angles
+            theta_V= calculate_virtual_angle(p0_2,p2_4,p4_6,p2_6,gc["GC4"])
+        
+            theta_V1,theta_V2,theta_V3,theta_V4=theta_V
+               
+            #Virtual Rotational matrix
+            R0_3_V= virtual_rotational_matrics(theta_V[:3])
+
+
+            p26_hat = p2_6 / np.linalg.norm(p2_6)
+           
+            As = np.dot(cross_product_matrix(p26_hat), R0_3_V) 
+            Bs = -np.dot((cross_product_matrix(p26_hat) @ cross_product_matrix(p26_hat)),  R0_3_V)
+            Cs = np.outer(p26_hat, p26_hat.T) @ R0_3_V
+            
+            print("\n*****CONFIGURATION******\n")
+        
+            theta_all = []
+            for psi_value in psi:
+                psi_value=np.radians(psi_value)
+                #print(psi_value)
+                # Extract values from matrices
+                a_s31, b_s31, c_s31 = As[2, 0], Bs[2, 0], Cs[2, 0]
+                a_s32, b_s32, c_s32 = As[2, 1], Bs[2, 1], Cs[2, 1]
+                a_s33, b_s33, c_s33 = As[2, 2], Bs[2, 2], Cs[2, 2]
+                a_s22, b_s22, c_s22 = As[1, 1], Bs[1, 1], Cs[1, 1]
+                a_s12, b_s12, c_s12 = As[0, 1], Bs[0, 1], Cs[0, 1]
+              
+                # Calculate joint angles
+
+                #singularity check
+                at_bt_ct=detect_singularity(psi_value,gc["GC2"],a_s22,b_s22,c_s22,a_s12,b_s12,c_s12)
+                if at_bt_ct==0:
+                    constant=2  #assuming
+                    print("Singularity Detected in Joint angle 1")
+                    psi_sing=singular_arm_angle(psi_value,gc["GC2"],a_s22,b_s22,c_s22,a_s12,b_s12,c_s12)    
+                    psi_sing_range=[psi_sing - constant, psi_sing - constant]
+                    for psi_new in psi_sing_range:
+                        theta1 = np.arctan2(gc["GC2"] * (a_s22 * np.sin(psi_new) + b_s22 * np.cos(psi_new) + c_s22),
+                                    gc["GC2"] * (a_s12 * np.sin(psi_new) + b_s12 * np.cos(psi_new) + c_s12))
+                else:
+                        theta1 = np.arctan2(gc["GC2"] * (a_s22 * np.sin(psi_value) + b_s22 * np.cos(psi_value) + c_s22),
+                                    gc["GC2"] * (a_s12 * np.sin(psi_value) + b_s12 * np.cos(psi_value) + c_s12))
+            
+            
+            
+            
+                #theta2 = np.arccos(a_s32 * np.sin(psi_value) + b_s32 * np.cos(psi_value) + c_s32)
+           
+                theta2 = gc["GC2"] * (np.arccos((a_s32 * np.sin(psi_value) + b_s32 * np.cos(psi_value) + c_s32)))
+
+          
+                theta3 = np.arctan2(gc["GC2"] *( (-a_s33 * np.sin(psi_value) - b_s33 * np.cos(psi_value) - c_s33)),
+                                    gc["GC2"] *( (-a_s31 * np.sin(psi_value) - b_s31 * np.cos(psi_value) - c_s31)))
+                theta3 = 0 if abs(theta3) < 1e-15 else theta3
+
+
+            
+
+
+                theta_4=theta_V4
+           
+        
+                R3_4=np.array([
+                                    [np.cos(theta_4), -np.sin(theta_4) * np.cos(alpha[3]), np.sin(theta_4) * np.sin(alpha[3])],
+                                    [np.sin(theta_4), np.cos(theta_4) * np.cos(alpha[3]), -np.cos(theta_4) * np.sin(alpha[3])],
+                                    [0, np.sin(alpha[3]), np.cos(alpha[3])]
+                            
+                                ])
+    
+                Aw = np.dot(np.dot(np.transpose(R3_4),np.transpose(As)), R0_7)
+                Bw = np.dot(np.dot(np.transpose(R3_4),np.transpose(Bs)), R0_7)
+                Cw = np.dot(np.dot(np.transpose(R3_4),np.transpose(Cs)), R0_7)
+      
+         
+        
+        
+                # Extract values from matrices
+                a_w31, b_w31, c_w31 = Aw[2, 0], Bw[2, 0], Cw[2, 0]
+                a_w32, b_w32, c_w32 = Aw[2, 1], Bw[2, 1], Cw[2, 1]
+                a_w33, b_w33, c_w33 = Aw[2, 2], Bw[2, 2], Cw[2, 2]
+                a_w23, b_w23, c_w23 = Aw[1, 2], Bw[1, 2], Cw[1, 2]
+                a_w13, b_w13, c_w13 = Aw[0, 2], Bw[0, 2], Cw[0, 2]
+
+            
+            
+               
+                theta_5 = np.arctan2(gc["GC6"] * (a_w23 * np.sin(psi_value) + b_w23 * np.cos(psi_value) + c_w23),
+                                    gc["GC6"] * (a_w13 * np.sin(psi_value) + b_w13 * np.cos(psi_value) + c_w13))
+
+            
+                theta_6 = gc["GC6"] * np.arccos(np.clip((a_w33 * np.sin(psi_value) + b_w33 * np.cos(psi_value) + c_w33), -1, 1))
+
+                theta_7 = np.arctan2(gc["GC6"] * (-a_w32 * np.sin(psi_value) - b_w32 * np.cos(psi_value) - c_w32),
+                                    gc["GC6"] * (-a_w31 * np.sin(psi_value) - b_w31 * np.cos(psi_value) - c_w31))
+            
+                print("psi:",np.degrees(psi_value))
+                print("Global_Configuration:",[gc["GC2"],gc["GC4"],gc["GC6"]])
+                
+                if -170 <= np.degrees(theta1) <= 170 and -120 <= np.degrees(theta2) <= 120 and -170 <= np.degrees(theta3) <= 170 and \
+                    -120 <= np.degrees(theta_4) <= 120 and -170 <= np.degrees(theta_5) <= 170 and -120 <= np.degrees(theta_6) <= 120 and \
+                    -175 <= np.degrees(theta_7) <= 175:
+
+                    print("Solutions:", [np.degrees(theta1), np.degrees(theta2), np.degrees(theta3), np.degrees(theta_4),
+                          np.degrees(theta_5), np.degrees(theta_6), np.degrees(theta_7)])
+
+                    theta_all.append((np.degrees(theta1), np.degrees(theta2), np.degrees(theta3),
+                            np.degrees(theta_4), np.degrees(theta_5), np.degrees(theta_6), np.degrees(theta_7))) 
+                else: 
+                   print("no solutions within joint limits")
+                     
+                     
+
+        return theta_all
+
+
+
+def calculate_virtual_angle(p0_2,p2_4,p4_6,p2_6,GC4):
+    p2_6=np.array(p2_6)   
+  
+    theta_v3=0
+    
+    theta_v1=np.arctan2(p2_6[1],p2_6[0])
+
+    # Calculate the phi
+    norm_2p6 = np.linalg.norm(p2_6)
+    
+    #print("NM:",norm_2p6)
+    phi = np.arccos((d_se**2 +norm_2p6**2 - d_ew**2) / (2 * d_se * norm_2p6))
+
+        
+    # Calculate the virtual shoulder angle (θv4)
+    theta_v4 = GC4 * np.arccos((norm_2p6**2 - d_se**2 - d_ew**2) / (2 * d_se * d_ew))
+
+    # Calculate the virtual shoulder angle (θv2)
+    theta_v2 = np.arctan2(np.sqrt(np.square(p2_6[0]) + np.square(p2_6[1])), p2_6[2]) + GC4 * phi
+    print(theta_v2)
+    
+    #print(f"Virtual Elbow Angle (θv2): {theta_v2} degrees")
+        
+    theta_v=[theta_v1, theta_v2,theta_v3,theta_v4]
+    
+    return theta_v
+        
+
+def cross_product_matrix(v_hat):
+
+    # Create the cross product matrix for a unit vector
+    C = np.array([[0, -v_hat[2], v_hat[1]],
+                  [v_hat[2], 0, -v_hat[0]],
+                  [-v_hat[1], v_hat[0], 0]])
+    #print (C)
+    return C
+     
+     
+
+def virtual_rotational_matrics(theta_v):
+    R0_3_V = np.eye(3)
+    
+    for i in range(len(theta_v)):
+        theta_i = theta_v[i]   
+        A_i = np.array([
+            [np.cos(theta_i), -np.sin(theta_i) * np.cos(alpha[i]), np.sin(theta_i) * np.sin(alpha[i])],
+            [np.sin(theta_i), np.cos(theta_i) * np.cos(alpha[i]), -np.cos(theta_i) * np.sin(alpha[i])],
+            [0, np.sin(alpha[i]), np.cos(alpha[i])]
+        ])
+        R0_3_V = np.dot(R0_3_V, A_i)
+
+    return R0_3_V
+
+def detect_singularity(psi,gc_k,a_n,b_n,c_n,a_d,b_d,c_d):
+    a_t= gc_k*(c_n*b_d - b_n*c_d)
+    b_t= gc_k*(a_n*c_d - c_n*a_d)
+    c_t= gc_k*(a_n*b_d - b_n*a_d)
+    expression_value = (np.tan(psi/2)**2 * (b_t - c_t) - a_t)**2
+   
+    return expression_value
+
+def singular_arm_angle(psi,gc_k,a_n,b_n,c_n,a_d,b_d,c_d):
+    a_t= gc_k*(c_n*b_d - b_n*c_d)
+    b_t= gc_k*(a_n*c_d - c_n*a_d)
+    c_t= gc_k*(a_n*b_d - b_n*a_d)
+    psi_sing = 2 * np.arctan(a_t * b_t - c_t)
+    return psi_sing 
+  
+
+target_pose = [ -0.29908957,  -0.54270041, 0.67883033, math.radians(30), math.radians(10), math.radians(10)]
+
+inv_kinematics_instance = InvKinematics()
+joint_angles =inv_kinematics_instance.get_inv_kinematics(*target_pose)
+
+
